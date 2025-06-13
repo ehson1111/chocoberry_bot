@@ -11,6 +11,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.state import State, StatesGroup
+from sqlalchemy.exc import IntegrityError
 
 # Танзимоти logging
 logging.basicConfig(level=logging.INFO)
@@ -113,6 +116,11 @@ class AdminProductForm(StatesGroup):
     price = State()
     category = State()
     image = State()
+    
+# Иловаи маҳсулот
+
+
+
 
 class AdminOrderForm(StatesGroup):
     user = State()
@@ -161,7 +169,9 @@ async def start_command(message: types.Message):
             keyboard=[
                 [KeyboardButton(text="🍫 Меню"), KeyboardButton(text="🛒 Сабад")],
                 [KeyboardButton(text="👤 Профил"), KeyboardButton(text="💰 Кэшбэк")],
-                [KeyboardButton(text="📜 Таърихи фармоишҳо")]
+                [KeyboardButton(text="📜 Таърихи фармоишҳо"),KeyboardButton(text= "🏪 Адрес"),KeyboardButton(text="📞 Контакты")]
+                
+                
             ] + ([[KeyboardButton(text="🔧 Панели админ")] if is_admin(message.from_user.id) else []]),
             resize_keyboard=True
         )
@@ -403,7 +413,7 @@ async def remove_from_cart(callback: types.CallbackQuery):
             session.close()
 
 # Таърихи фармоишҳо
-@dp.message(lambda message: message.text == "📜 Таърихи фармоиш")
+@dp.message(lambda message: message.text == "📜 Таърихи фармоишҳо")
 async def view_order_history(message: types.Message):
     try:
         session = Session()
@@ -469,11 +479,11 @@ async def confirm_order(callback: types.CallbackQuery):
         total = sum(product.price * cart_item.quantity for cart_item, product in cart_items)
         cashback_amount = total * 0.05
 
-        order_details = "Фармоиши нав:\n"
-        order_details += f"Корбар: {escape_html(user.first_name)} (@{escape_html(user.username or '')})\n"
-        order_details += f"Рақами телефон: {escape_html(profile.phone_number)}\n"
-        order_details += f"Суроға: {escape_html(profile.address)}\n"
-        order_details += "Маҳсулотҳо:\n"
+        order_details = "📦 Фармоиши нав:\n\n"
+        order_details += f"👤 Корбар: {escape_html(user.first_name)} (@{escape_html(user.username or '')})\n"
+        order_details += f"📞 Рақами телефон:: {escape_html(profile.phone_number)}\n"
+        order_details += f"🏠 Суроға: {escape_html(profile.address)}\n"
+        order_details += "🍫 Маҳсулотҳо:\n"
         for cart_item, product in cart_items:
             order = Order(
                 telegram_id=callback.from_user.id,
@@ -485,9 +495,9 @@ async def confirm_order(callback: types.CallbackQuery):
             item_total = product.price * cart_item.quantity
             order_details += f"{escape_html(product.name)} x{cart_item.quantity} - ${item_total}\n"
 
-        order_details += f"Ҳамагӣ: ${total}\n"
-        order_details += f"Кэшбэки бадастоварда: ${cashback_amount}\n"
-        order_details += f"Сана: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+        order_details += f"💵 Ҳамагӣ: ${total}\n"
+        order_details += f"💰 Кэшбэки бадастоварда: ${cashback_amount}\n"
+        order_details += f"📅 Сана: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
 
         cashback = session.query(Cashback).filter_by(telegram_id=callback.from_user.id).first()
         if not cashback:
@@ -691,7 +701,7 @@ async def admin_manage_categories(callback: types.CallbackQuery):
         return
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Эджоди категория", callback_data="admin_add_category")],
+            [InlineKeyboardButton(text="Эҷоди категория", callback_data="admin_add_category")],
             [InlineKeyboardButton(text="Ҳазфи категория", callback_data="admin_delete_category")],
             [InlineKeyboardButton(text="🔙 Бозгашт ба панели админ", callback_data="admin_panel")]
         ]
@@ -699,46 +709,86 @@ async def admin_manage_categories(callback: types.CallbackQuery):
     await callback.message.answer("<b>Идоракунии категория:</b>", reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
+
+
+# Функсияи тозакунӣ барои HTML
+def escape_html(text: str) -> str:
+    if text is None:
+        return ""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
 # Иловаи маҳсулот
 @dp.callback_query(lambda c: c.data == "admin_add_product")
-async def admin_add_product(callback: types.CallbackQuery, state: FSMContext):
+async def admin_add_product(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
-        await callback.message.answer("Шумо дастрасї ба!")
+        await callback.message.answer("Шумо дастрасӣ ба панели админ надоред!")
+        await callback.answer()
         return
-    await callback.message.answer("Номи маҳсулотро ворид кун:")
+    await callback.message.answer("Номи маҳсулотро ворид кунед:")
     await state.set_state(AdminProductForm.name)
     await callback.answer()
 
 @dp.message(AdminProductForm.name)
-async def process_product_name(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Тавсифи маҳсулотро ворид кунед:")
-    await state.set_state(AdminProductForm.description)
+async def process_product_name(message: Message, state: FSMContext):
+    try:
+        name = message.text.strip()
+        if not name:
+            await message.answer("Номи маҳсулот набояд холӣ бошад! Лутфан, номи дурустро ворид кунед:")
+            return
+        await state.update_data(name=name)
+        await message.answer("Тавсифи маҳсулотро ворид кунед (ё /skip барои гузаштан):")
+        await state.set_state(AdminProductForm.description)
+    except Exception as e:
+        logger.error(f"Хато дар process_product_name: {str(e)}")
+        await message.answer("Хато рух дод, лутфан дубора кӯшиш кунед!")
+        await state.clear()
 
 @dp.message(AdminProductForm.description)
-async def process_product_description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await message.answer("Нархи маҳсулотро ворид кунтед (масалан, 10.5):")
-    await state.set_state(AdminProductForm.price)
+async def process_product_description(message: Message, state: FSMContext):
+    try:
+        description = None if message.text == "/skip" else message.text.strip()
+        await state.update_data(description=description)
+        await message.answer("Нархи маҳсулотро ворид кунед (масалан, 10.5):")
+        await state.set_state(AdminProductForm.price)
+    except Exception as e:
+        logger.error(f"Хато дар process_product_description: {str(e)}")
+        await message.answer("Хато рух дод, лутфан дубора кӯшиш кунед!")
+        await state.clear()
 
 @dp.message(AdminProductForm.price)
-async def process_product_price(message: types.Message, state: FSMContext):
+async def process_product_price(message: Message, state: FSMContext):
     try:
-        price = float(message.text)
+        price = float(message.text.strip())
+        if price <= 0:
+            await message.answer("Нарх бояд мусбат бошад! Лутфан, нархи дурустро ворид кунед (масалан, 10.5):")
+            return
         await state.update_data(price=price)
         await message.answer("Категорияи маҳсулотро ворид кунед (масалан, Десерт):")
         await state.set_state(AdminProductForm.category)
     except ValueError:
         await message.answer("Лутфан, нархи дурустро ворид кунед (масалан, 10.5):")
+    except Exception as e:
+        logger.error(f"Хато дар process_product_price: {str(e)}")
+        await message.answer("Хато рух дод, лутфан дубора кӯшиш кунед!")
+        await state.clear()
 
 @dp.message(AdminProductForm.category)
-async def process_product_category(message: types.Message, state: FSMContext):
-    await state.update_data(category=message.text)
-    await message.answer("Тасвири маҳсулотро бор кунед (ё барои гузаштан /skip ворид кунед):")
-    await state.set_state(AdminProductForm.image)
+async def process_product_category(message: Message, state: FSMContext):
+    try:
+        category_name = message.text.strip()
+        if not category_name:
+            await message.answer("Номи категория набояд холӣ бошад! Лутфан, номи дурустро ворид кунед:")
+            return
+        await state.update_data(category=category_name)
+        await message.answer("Тасвири маҳсулотро бор кунед (ё барои гузаштан /skip ворид кунед):")
+        await state.set_state(AdminProductForm.image)
+    except Exception as e:
+        logger.error(f"Хато дар process_product_category: {str(e)}")
+        await message.answer("Хато рух дод, лутфан дубора кӯшиш кунед!")
+        await state.clear()
 
 @dp.message(AdminProductForm.image)
-async def process_product_image(message: types.Message, state: FSMContext):
+async def process_product_image(message: Message, state: FSMContext):
     try:
         data = await state.get_data()
         image_id = None
@@ -749,9 +799,9 @@ async def process_product_image(message: types.Message, state: FSMContext):
             return
 
         session = Session()
-        name = escape_html(data["name"].strip())
-        description = escape_html(data["description"].strip()) if data["description"] else None
-        category_name = escape_html(data["category"].strip())
+        name = escape_html(data["name"])
+        description = escape_html(data["description"]) if data["description"] else None
+        category_name = escape_html(data["category"])
 
         category = session.query(Category).filter_by(name=category_name).first()
         if not category:
@@ -769,27 +819,34 @@ async def process_product_image(message: types.Message, state: FSMContext):
         session.add(product)
         try:
             session.commit()
+        except IntegrityError as e:
+            session.rollback()
+            logger.error(f"Хатои такрори маҳсулот: {str(e)}")
+            await message.answer(f"Маҳсулот бо номи '{name}' аллакай мавҷуд аст! Лутфан, номи дигар интихоб кунед.")
+            await state.clear()
+            session.close()
+            return
         except Exception as e:
             session.rollback()
+            logger.error(f"Хато ҳангоми иловаи маҳсулот: {str(e)}")
             await message.answer(f"Хато ҳангоми иловаи маҳсулот: {str(e)}")
+            await state.clear()
             session.close()
             return
 
         session.close()
-
-        await message.answer(f"Маҳсулот '{name}' <b>илова шуд!</b>", parse_mode="HTML")
-        await state.clear()
-
+        await message.answer(f"Маҳсулот '<b>{escape_html(name)}</b>' бомуваффақият илова шуд! ✅", parse_mode="HTML")
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="Иловаи маҳсулоти дигар", callback_data="admin_add_product")],
                 [InlineKeyboardButton(text="Ба панели админ", callback_data="admin_panel")]
             ]
         )
-        await message.answer("Амали навбатї:", reply_markup=keyboard)
+        await message.answer("Амали навбатӣ:", reply_markup=keyboard)
+        await state.clear()
     except Exception as e:
         logger.error(f"Хато дар process_product_image: {str(e)}")
-        await message.answer("Хато рух дод, лутфан дубора куш кунед!")
+        await message.answer("Хато рух дод, лутфан дубора кӯшиш кунед! 😞")
         await state.clear()
         if 'session' in locals():
             session.close()
@@ -851,7 +908,7 @@ async def confirm_delete_product(callback: types.CallbackQuery):
             ]
         )
         await callback.message.answer(
-            f"Ой шумо мутмаїн, ки мехоҳед маҳсулот '{escape_html(product.name)}'-ро хазф кунед? Ин амал ҳамаи сабадҳо ва фармоишҳои марбутараро низ хезз мекунад!",
+            f"Ой шумо мутмаи ҳастед , ки мехоҳед маҳсулоти '{escape_html(product.name)}'-ро хазф кунед? Ин амал ҳамаи сабадҳо ва фармоишҳои марбутараро низ хезз мекунад!",
             reply_markup="HTML", parse_mode=keyboard
         )
         await callback.answer()
@@ -865,7 +922,7 @@ async def confirm_delete_product(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("confirm_delete_product_"))
 async def execute_delete_product(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.message.answer("Шумо дастрасї ба!")
+        await callback.message.answer("Шумо дастраси ба ин меню надоред!")
         await callback.answer()
         return
 
@@ -906,7 +963,7 @@ async def execute_delete_product(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "admin_add_order")
 async def admin_add_order(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
-        await callback.message.answer("Шумо дастрасї ба!")
+        await callback.message.answer("Шумо дастраси ба ин меню надоред!")
         return
     try:
         session = Session()
@@ -1014,7 +1071,7 @@ async def process_order_quantity(message: types.Message, state: FSMContext):
     
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Иловайи фаримоиши дигар", callback_data="admin_add_order")],
+                    [InlineKeyboardButton(text="Иловаи фаримоиши дигар", callback_data="admin_add_order")],
                     [InlineKeyboardButton(text="Ба панели админ", callback_data="admin_panel")]
                 ]
             )
@@ -1030,7 +1087,7 @@ async def process_order_quantity(message: types.Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "admin_view_orders")
 async def admin_view_orders(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
-        await callback.message.answer("Шумо дастрашї ба!")
+        await callback.message.answer("Шумо дастраси ба ин меню надоред!")
         return
     try:
         session = Session()
@@ -1043,34 +1100,34 @@ async def admin_view_orders(callback: types.CallbackQuery):
 
         response = "<b>Рӯйхати фармош:</b>\n\n"
         for order, user, product in orders:
-            response += f"Фармоиш #{order.id}\n"
-            response += f"Корбар: {escape_html(user.first_name)} (@{escape_html(user.username or '')})\n"
-            response += f"Маҳсулот: {escape_html(product.name)}\n"
+            response += f"📦 Фармоиши навФармоиш #{order.id}\n"
+            response += f"👤 Корбар: {escape_html(user.first_name)} (@{escape_html(user.username or '')})\n"
+            response += f"🍫 Маҳсулотҳо: {escape_html(product.name)}\n"
             response += f"Миқми: {order.quantity}\n"
-            response += f"Ҳамаг: ${order.total}\n"
-            response += f"Санаа: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            response += f"💵 Ҳамагӣ: ${order.total}\n"
+            response += f"📅 Сана: {order.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 
         await callback.message.answer(response, parse_mode="HTML")
         await callback.answer()
     except Exception as e:
         logger.error(f"Хато дар admin_view_orders: {str(e)}")
-        await callback.message.answer("Хато рух, лутра дубара куш!")
+        await callback.message.answer("Хато рух, лутфан дубора кушиш кун!")
         await callback.answer()
 
 # Идоракунии категория
 @dp.callback_query(lambda c: c.data == "admin_add_category")
 async def admin_add_category(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
-        await callback.message.answer("Шумо дастрашї ба!")
+        await callback.message.answer("Шумо дастраси ба ин меню надоред!")
         await callback.answer()
         return
     try:
-        await callback.message.answer("Номи категорияро ворид кунда (масалан, Десерт):")
+        await callback.message.answer("Номи категорияро ворид кунед (масалан, Десерт):")
         await state.set_state(AdminCategoryForm.name)
         await callback.answer()
     except Exception as e:
         logger.error(f"Хато дар admin_add_category: {str(e)}")
-        await callback.message.answer("Хато рух, лутра дубара куш!")
+        await callback.message.answer("Хато рух, лутфан дубора кушиш кун!")
         await callback.answer()
 
 @dp.message(AdminCategoryForm.name)
@@ -1078,7 +1135,7 @@ async def process_category_name(message: types.Message, state: FSMContext):
     try:
         category_name = message.text.strip()
         if not category_name:
-            await message.answer("Номисиякия набояд холи бош! Лутфан, номи дурусто ворид:")
+            await message.answer("Ном набояд холи бошад! Лутфан, номи дурусто ворид:")
             return
 
         session = Session()
@@ -1096,8 +1153,8 @@ async def process_category_name(message: types.Message, state: FSMContext):
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Эджади категори дигар", callback_data="admin_add_category")],
-                [InlineKeyboardButton(text="Ба идорашакини", callback_data="admin_manage_categories")],
+                [InlineKeyboardButton(text="Эҷоди категори дигар", callback_data="admin_add_category")],
+                [InlineKeyboardButton(text="Ба панели категория", callback_data="admin_manage_categories")],
                 [InlineKeyboardButton(text="Ба панели админ", callback_data="admin_panel")]
             ]
         )
@@ -1184,6 +1241,33 @@ async def confirm_delete_category(callback: types.CallbackQuery):
         await callback.answer()
         if 'session' in locals():
             session.close()
+
+
+
+@dp.message(lambda message: message.text == "🏪 Адрес")
+async def addresses(message: types.Message):
+    address_text = (
+        "🏪 Мои пункты продаж:\n\n"
+        "1. Дом печати (центр города)\n"
+        "2. Ашан, 3 этаж (фудкорт)\n"
+        "3. Сиёма Мол, 2 этаж\n\n"
+        "🕒 График работы: 10:00-23:00"
+    )
+    await message.answer(address_text)
+
+@dp.message(lambda message : message.text == "📞 Контакты")
+async def contacts(message:  types.Message):
+    contact_text = (
+        "📱 Наши контакты:\n\n"
+        "☎️ Телефон для заказов:\n"
+        "+992 900-58-52-49\n"
+        "+992 877-80-80-02\n\n"
+        "💬 Пишите нам в любое время!"
+    )
+    await message.answer(contact_text)
+
+
+
 
 # Оғоз
 async def main():
