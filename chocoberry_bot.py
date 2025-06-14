@@ -125,8 +125,11 @@ class AdminCategoryForm(StatesGroup):
     name = State()
     
 class OrderConfirmation(StatesGroup):
-    confirm_cashback = State()    
-
+    confirm_cashback = State()
+    payment_method = State()  
+    
+    
+    
 # Тарҷумаҳо
 TRANSLATIONS = {
     "tj": {
@@ -183,6 +186,11 @@ TRANSLATIONS = {
         "use_cashback": "Истифодаи кэшбэк",
         "skip_cashback": "Бе кэшбэк идома диҳед",
         "cashback_used": "Кэшбэк дар ҳаҷми ${amount:.2f} истифода шуд!",
+        "choose_payment_method": "Лутфан, усули пардохтро интихоб кунед:",
+        "payment_cash": "💵 Нақд",
+        "payment_card": "💳 Корти бонкӣ",
+        "payment_method_selected": "Усули пардохт: {method} интихоб шуд.",
+        "order_details_payment": "Усули пардохт: {method}",
     },
     "ru": {
         "welcome": "<b>🍫🍓 Добро пожаловать в ChocoBerry!</b>\nВыберите действие:",
@@ -238,6 +246,11 @@ TRANSLATIONS = {
         "use_cashback": "Использовать кэшбэк",
         "skip_cashback": "Продолжить без кэшбэка",
         "cashback_used": "Кэшбэк в размере ${amount:.2f} использован!",
+        "choose_payment_method": "Пожалуйста, выберите способ оплаты:",
+        "payment_cash": "💵 Наличные",
+        "payment_card": "💳 Банковская карта",
+        "payment_method_selected": "Способ оплаты: {method} выбран.",
+        "order_details_payment": "Способ оплаты: {method}",
     },
     "en": {
         "welcome": "<b>🍫🍓 Welcome to ChocoBerry!</b>\nChoose an action:",
@@ -293,6 +306,12 @@ TRANSLATIONS = {
         "use_cashback": "Use cashback",
         "skip_cashback": "Continue without cashback",
         "cashback_used": "Cashback of ${amount:.2f} has been used!",
+        "choose_payment_method": "Please select a payment method:",
+        "payment_cash": "💵 Cash",
+        "payment_card": "💳 Bank Card",
+        "payment_method_selected": "Payment method: {method} selected.",
+        "order_details_payment": "Payment method: {method}",
+        
     }
 }
 
@@ -734,7 +753,10 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
             session.add(cashback)
             session.commit()
 
-        # Агар кэшбэк мавҷуд бошад, аз корбар пурсем, ки оё мехоҳад истифода кунад
+        # Нигоҳ доштани маблағи умумӣ ва маълумоти сабад дар FSM
+        await state.update_data(total=total, cart_items=[(item.id, product.id, item.quantity) for item, product in cart_items])
+
+        # Агар кэшбэк мавҷуд бошад, пурсем, ки оё истифода шавад
         if cashback.amount > 0:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=get_text(callback.from_user.id, "use_cashback"), callback_data="apply_cashback")],
@@ -746,16 +768,22 @@ async def confirm_order(callback: types.CallbackQuery, state: FSMContext):
                 reply_markup=keyboard,
                 parse_mode="HTML"
             )
-            # Нигоҳ доштани маблағи умумӣ ва маълумоти сабад дар FSM
-            await state.update_data(total=total, cart_items=[(item.id, product.id, item.quantity) for item, product in cart_items])
             await state.set_state(OrderConfirmation.confirm_cashback)
-            session.close()
-            await callback.answer()
-            return
+        else:
+            # Агар кэшбэк набошад, мустақиман ба интихоби усули пардохт мегузарем
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=get_text(callback.from_user.id, "payment_cash"), callback_data="payment_cash")],
+                [InlineKeyboardButton(text=get_text(callback.from_user.id, "payment_card"), callback_data="payment_card")]
+            ])
+            await callback.message.answer(
+                get_text(callback.from_user.id, "choose_payment_method"),
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            await state.set_state(OrderConfirmation.payment_method)
 
-        # Агар кэшбэк набошад, мустақиман фармоишро идома диҳем
-        await process_order(callback, state, total, cart_items, user, profile, session)
         session.close()
+        await callback.answer()
     except Exception as e:
         logger.error(f"Хато дар confirm_order: {str(e)}")
         await callback.message.answer(get_text(callback.from_user.id, "error"), parse_mode="HTML")
@@ -785,14 +813,26 @@ async def handle_cashback_choice(callback: types.CallbackQuery, state: FSMContex
         if callback.data == "apply_cashback":
             cashback = session.query(Cashback).filter_by(telegram_id=callback.from_user.id).first()
             if cashback and cashback.amount > 0:
-                cashback_applied = min(cashback.amount, total)  # Истифодаи кэшбэк то маблағи умумӣ
+                cashback_applied = min(cashback.amount, total)
                 total -= cashback_applied
                 cashback.amount -= cashback_applied
                 session.commit()
 
-        await process_order(callback, state, total, cart_items, user, profile, session, cashback_applied)
+        # Нигоҳ доштани маблағи нави умумӣ
+        await state.update_data(total=total, cashback_applied=cashback_applied)
+
+        # Гузариш ба интихоби усули пардохт
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_text(callback.from_user.id, "payment_cash"), callback_data="payment_cash")],
+            [InlineKeyboardButton(text=get_text(callback.from_user.id, "payment_card"), callback_data="payment_card")]
+        ])
+        await callback.message.answer(
+            get_text(callback.from_user.id, "choose_payment_method"),
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        await state.set_state(OrderConfirmation.payment_method)
         session.close()
-        await state.clear()
         await callback.answer()
     except Exception as e:
         logger.error(f"Хато дар handle_cashback_choice: {str(e)}")
@@ -800,8 +840,48 @@ async def handle_cashback_choice(callback: types.CallbackQuery, state: FSMContex
         await callback.answer()
         if 'session' in locals():
             session.close()
+            
 
-async def process_order(callback: types.CallbackQuery, state: FSMContext, total: float, cart_items: list, user, profile, session, cashback_applied: float = 0.0):
+@dp.callback_query(lambda c: c.data in ["payment_cash", "payment_card"])
+async def handle_payment_method(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        session = Session()
+        user = session.query(User).filter_by(telegram_id=callback.from_user.id).first()
+        profile = session.query(UserProfile).filter_by(telegram_id=callback.from_user.id).first()
+        data = await state.get_data()
+        total = data.get("total", 0.0)
+        cashback_applied = data.get("cashback_applied", 0.0)
+        cart_items_data = data.get("cart_items", [])
+
+        # Барқарор кардани маълумоти сабад
+        cart_items = []
+        for cart_id, product_id, quantity in cart_items_data:
+            cart_item = session.query(Cart).filter_by(id=cart_id).first()
+            product = session.query(Product).filter_by(id=product_id).first()
+            if cart_item and product:
+                cart_items.append((cart_item, product))
+
+        # Тасдиқи усули пардохт
+        payment_method = "Нақд" if callback.data == "payment_cash" else "Корти бонкӣ"
+        await callback.message.answer(
+            get_text(callback.from_user.id, "payment_method_selected", method=payment_method),
+            parse_mode="HTML"
+        )
+
+        # Коркарди фармоиш
+        await process_order(callback, state, total, cart_items, user, profile, session, cashback_applied, payment_method)
+        session.close()
+        await state.clear()
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Хато дар handle_payment_method: {str(e)}")
+        await callback.message.answer(get_text(callback.from_user.id, "error"), parse_mode="HTML")
+        await callback.answer()
+        if 'session' in locals():
+            session.close()
+                                    
+
+async def process_order(callback: types.CallbackQuery, state: FSMContext, total: float, cart_items: list, user, profile, session, cashback_applied: float = 0.0, payment_method: str = None):
     # Ҳисоби кэшбэки нав
     cashback_earned = total * 0.05  # 5% кэшбэк аз маблағи ниҳоӣ
     cashback = session.query(Cashback).filter_by(telegram_id=callback.from_user.id).first()
@@ -832,6 +912,8 @@ async def process_order(callback: types.CallbackQuery, state: FSMContext, total:
     if cashback_applied > 0:
         order_details += f"💰 {get_text(callback.from_user.id, 'cashback_used')}: ${cashback_applied:.2f}\n"
     order_details += f"💰 {get_text(callback.from_user.id, 'cashback_earned')}: ${cashback_earned:.2f}\n"
+    if payment_method:
+        order_details += f"💳 {get_text(callback.from_user.id, 'order_details_payment', method=payment_method)}\n"
     order_details += f"📅 {get_text(callback.from_user.id, 'date')}: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
 
     # Тоза кардани сабад
@@ -848,7 +930,9 @@ async def process_order(callback: types.CallbackQuery, state: FSMContext, total:
     # Паём ба корбар
     response = get_text(callback.from_user.id, "order_confirmed")
     if cashback_applied > 0:
-        response += f"\n{get_text(callback.from_user.id, 'cashback_used')}: ${cashback_applied:.2f}"
+        response += f"\n{get_text(callback.from_user.id, 'cashback_used'): {cashback_applied:.2f}}"
+    if payment_method:
+        response += f"\n{get_text(callback.from_user.id, 'order_details_payment', method=payment_method)}"
     await callback.message.answer(response, parse_mode="HTML")
 
 @dp.message(lambda message: message.text == get_text(message.from_user.id, "profile"))
@@ -1111,16 +1195,59 @@ async def process_product_price(message: types.Message, state: FSMContext):
     try:
         price = float(message.text)
         await state.update_data(price=price)
-        await message.answer("Категорияи маҳсулотро ворид кунед (масалан, Десерт):")
+        
+        # Гирифтани рӯйхати категорияҳо
+        session = Session()
+        categories = session.query(Category).all()
+        session.close()
+
+        if not categories:
+            await message.answer("Ягон категория мавҷуд нест! Лутфан, аввал категория эҷод кунед.")
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="Эҷоди категория", callback_data="admin_add_category")],
+                    [InlineKeyboardButton(text=get_text(message.from_user.id, "back_to_admin"), callback_data="admin_panel")]
+                ]
+            )
+            await message.answer(get_text(message.from_user.id, "next_action"), reply_markup=keyboard)
+            return
+
+        # Сохтани тугмаҳо барои интихоби категория
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=category.name, callback_data=f"select_category_{category.id}")]
+                for category in categories
+            ]
+        )
+        keyboard.inline_keyboard.append([InlineKeyboardButton(text="Эҷоди категорияи нав", callback_data="admin_add_category")])
+        keyboard.inline_keyboard.append([InlineKeyboardButton(text=get_text(message.from_user.id, "back_to_admin"), callback_data="admin_panel")])
+
+        await message.answer("Категорияро аз рӯйхат интихоб кунед:", reply_markup=keyboard)
         await state.set_state(AdminProductForm.category)
     except ValueError:
         await message.answer("Лутфан, нархи дурустро ворид кунед (масалан, 10.5):")
 
-@dp.message(AdminProductForm.category)
-async def process_product_category(message: types.Message, state: FSMContext):
-    await state.update_data(category=message.text)
-    await message.answer("Тасвири маҳсулотро бор кунед (ё барои гузаштан /skip ворид кунед):")
-    await state.set_state(AdminProductForm.image)
+@dp.callback_query(lambda c: c.data.startswith("select_category_"))
+async def process_category_selection(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        category_id = int(callback.data.split("_")[-1])
+        session = Session()
+        category = session.query(Category).filter_by(id=category_id).first()
+        session.close()
+
+        if not category:
+            await callback.message.answer(get_text(callback.from_user.id, "no_categories"))
+            await callback.answer()
+            return
+
+        await state.update_data(category_id=category_id)
+        await callback.message.answer("Тасвири маҳсулотро бор кунед (ё барои гузаштан /skip ворид кунед):")
+        await state.set_state(AdminProductForm.image)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Хато дар process_category_selection: {str(e)}")
+        await callback.message.answer(get_text(callback.from_user.id, "error"))
+        await callback.answer()
 
 @dp.message(AdminProductForm.image)
 async def process_product_image(message: types.Message, state: FSMContext):
@@ -1136,19 +1263,13 @@ async def process_product_image(message: types.Message, state: FSMContext):
         session = Session()
         name = escape_html(data["name"].strip())
         description = escape_html(data["description"].strip()) if data["description"] else None
-        category_name = escape_html(data["category"].strip())
-
-        category = session.query(Category).filter_by(name=category_name).first()
-        if not category:
-            category = Category(name=category_name)
-            session.add(category)
-            session.commit()
+        category_id = data["category_id"]
 
         product = Product(
             name=name,
             description=description,
             price=data["price"],
-            category_id=category.id,
+            category_id=category_id,
             image_id=image_id
         )
         session.add(product)
